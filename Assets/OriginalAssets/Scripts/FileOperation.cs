@@ -365,6 +365,10 @@ public class FileOperation  // ファイルの読み書きを行う。
         string[] s1 =
         {
             Convert.ToString(trialCount), Convert.ToString(time),
+            
+            // Convert.ToString(recordObject.transform.position.x), Convert.ToString(recordObject.transform.position.y), Convert.ToString(recordObject.transform.position.z),
+            // Convert.ToString(recordObject.transform.rotation.x), Convert.ToString(recordObject.transform.rotation.y), Convert.ToString(recordObject.transform.rotation.z),
+            // Convert.ToString(recordObject.transform.rotation.w),
             Convert.ToString(RightHandPosition.x), Convert.ToString(RightHandPosition.y), Convert.ToString(RightHandPosition.z),
             Convert.ToString(RightHandRotationQ.x), Convert.ToString(RightHandRotationQ.y), Convert.ToString(RightHandRotationQ.z),
             Convert.ToString(RightHandRotationQ.w),

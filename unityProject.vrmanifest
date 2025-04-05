@@ -5,7 +5,7 @@
       "app_key": "application.generated.unity.timeoperation_3d_prot1.exe",
       "launch_type": "url",
       "url": "steam://launch/",
-      "action_manifest_path": "C:\\Users\\olab\\Desktop\\ito\\UnityProject\\Time-Operation_3D_prot1_forGit\\Assets\\StreamingAssets\\SteamVR\\actions.json",
+      "action_manifest_path": "C:\\Users\\olab\\Desktop\\ito\\UnityProject\\relative-absolute-hold_prot1\\Assets\\StreamingAssets\\SteamVR\\actions.json",
       "strings": {
         "en_us": {
           "name": "Time-Operation_3D_prot1 [Testing]"
