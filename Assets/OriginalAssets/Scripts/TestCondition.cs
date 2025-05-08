@@ -22,16 +22,61 @@ public class TestCondition : MonoBehaviour
 
     void Start()
     {
-        testFile = new FileOperation(readFileName, readFileRowCount, writeFileName, user,
-         startPoint, startPoint2, endPoint, endPoint2);
-        testFile.WriteOpenData();
-        testFile.ReadOpenData();
-        testFile.FileSettingCheck();
+        // FileOperation の初期化方法を変更
+        try
+        {
+            // 1. 新しい5引数コンストラクタでインスタンス作成
+            testFile = new FileOperation(user, startPoint, startPoint2, endPoint, endPoint2);
+
+            // 2. モデルデータを読み込む (ファイル名が指定されている場合)
+            if (!string.IsNullOrEmpty(readFileName))
+            {
+                if (!testFile.LoadModelData(readFileName, readFileRowCount))
+                {
+                    Debug.LogError($"TestCondition: Failed to load model data '{readFileName}'. Disabling component.", this);
+                    enabled = false;
+                    return;
+                }
+            }
+            else
+            {
+                Debug.LogWarning("TestCondition: readFileName is not set. Model data will not be loaded.", this);
+            }
+
+            // 3. 書き込みファイル名を設定 (ファイル名が指定されている場合)
+            if (!string.IsNullOrEmpty(writeFileName))
+            {
+               testFile.SetWriteFileNameBase(writeFileName);
+            }
+            else
+            {
+
+            Debug.LogError("TestCondition: writeFileName is not set. Recording will likely fail.", this);
+            }
+
+            Debug.Log("TestCondition initialized successfully.");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"TestCondition: Initialization failed. Error: {ex.Message} {ex.StackTrace}", this);
+            enabled = false;
+        }
+
+        // WriteOpenData() と ReadOpenData() の呼び出しは不要になったため削除
+        // testFile.WriteOpenData();
+        // testFile.ReadOpenData();
     }
 
     // Update is called once per frame
     void FixedUpdate()
     {
+        if (testFile.fileSettingWrong)
+        {
+            Debug.LogError("File setting check failed after initialization. Disabling component.", this);
+            enabled = false;
+            UnityEditor.EditorApplication.isPlaying = false;
+            return;
+        }
         interactUI = Iui.GetState(SteamVR_Input_Sources.RightHand);
         if(interactUI)
         {

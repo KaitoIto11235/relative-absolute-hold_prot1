@@ -36,16 +36,28 @@ def sliding_dist(Axw, Ayw, Azw, Bxw, Byw, Bzw, dAxw, dAyw, dAzw, dBxw, dByw, dBz
     w = np.sqrt(np.sum(((Axw - Bxw) * win) ** 2.) + np.sum(((Ayw - Byw) * win) ** 2.) + np.sum(((Azw - Bzw) * win) ** 2.))
     return (1 - a) * dw + a * w
 
+# def _traceback(D):
+#     i, j = np.array(D.shape) - 2
+#     p, q = [i], [j]
+#     while (i > 0) or (j > 0):
+#         tb = np.argmin((D[i + 1, j + 1], D[i, j + 1], D[i + 1, j]))
+#         if tb == 0:
+#             i -= 1
+#             j -= 1
+#         elif tb == 1:
+#             i -= 1
+#         else:  # (tb == 2):
+#             j -= 1
+#         p.insert(0, i)
+#         q.insert(0, j)
+        
+#     return np.array(p), np.array(q)
+
 def _traceback(D):
     i, j = np.array(D.shape) - 2
     p, q = [i], [j]
     while (i > 0) or (j > 0):
         tb = np.argmin((D[i, j], D[i, j + 1], D[i + 1, j]))
-        if(i == 0):
-            tb = 2
-        elif (j == 0):
-            tb = 1
-            
         if tb == 0:
             i -= 1
             j -= 1
@@ -55,6 +67,7 @@ def _traceback(D):
             j -= 1
         p.insert(0, i)
         q.insert(0, j)
+        
     return np.array(p), np.array(q)
 
 
@@ -117,14 +130,17 @@ def plot_alignment(ref_signal, estimated_signal, path, **kwargs):
     colors = kwargs.get('colors', [sns.color_palette()[0], sns.color_palette()[1], 'k', 'k', 'k', 'k'])
 
     # 上下に分割して実際の値を表示するために、Y軸の範囲を設定
-    ref_min, ref_max = np.nanmin(ref_signal), np.nanmax(ref_signal)
-    est_min, est_max = np.nanmin(estimated_signal), np.nanmax(estimated_signal)
+    ref_min = min(np.nanmin(ref_signal), np.nanmin(estimated_signal))
+    ref_max = max(np.nanmax(ref_signal), np.nanmax(estimated_signal))
+    est_min, est_max = ref_min, ref_max
+    # ref_min, ref_max = -1, 1
+    # est_min, est_max = -1, 1
     
     # Y軸の範囲を計算（余白を含む）- ゼロ除算を防ぐ
-    #range_ref = ref_max - ref_min
-    range_ref = 2
-    #range_est = est_max - est_min
-    range_est = 2
+    range_ref = ref_max - ref_min
+    #range_ref = 2
+    range_est = est_max - est_min
+    #range_est = 2
     
     # 範囲がゼロまたは無効な場合のデフォルト値
     if np.isnan(range_ref) or range_ref <= 1e-10:
@@ -237,7 +253,7 @@ def plot_costmatrix(matrix, path):
     """
     pl.imshow(matrix.T, cmap='viridis', origin='lower', interpolation='None')
     pl.colorbar()
-    pl.plot(path[0], path[1], 'w.-')
+    #pl.plot(path[0], path[1], 'w.-')
     pl.xlim((-0.5, matrix.shape[0] - 0.5))
     pl.ylim((-0.5, matrix.shape[1] - 0.5))
     
@@ -374,7 +390,7 @@ def dtw_sw(Ax, Ay, Az, Bx, By, Bz, winlen, alpha=0.5, **kwargs):
 
     for i in range(Axl):
         for j in range(Bxl):
-            tmp_ac[i, j] += min([ac[i, j], ac[i, j + 1], ac[i + 1, j]])
+            tmp_ac[i, j] += min([ac[i, j], ac[i, j + 1], ac[i + 1, j]]) #ac[i, j] == tmp_ac[i-1, j-1]のため。
 
     path = _traceback(ac)
 
@@ -446,9 +462,6 @@ def compute_non_zero_diffs(positions):
     result = []
     i = 0
     while i < len(diffs):
-        # 現在のインデックスを保存
-        current_idx = i
-        
         # 現在の差分が0ベクトルかチェック
         if np.allclose(diffs[i], 0):
             # 次の非ゼロ点を探す
@@ -460,20 +473,19 @@ def compute_non_zero_diffs(positions):
             if next_non_zero < len(diffs):
                 # 0でない値をそのまま使用
                 result.append(diffs[next_non_zero])
-
                 # インデックスを更新
                 i = next_non_zero + 1
             else:
-                # 残りすべて0の場合
+                # 残りすべて0の場合、スキップ
                 break
         else:
             # 通常の差分をそのまま使用
             result.append(diffs[i])
             i += 1
     
-    # 結果が空の場合は[0,0,0]の配列を返す
+    # 結果が空の場合は空の配列を返す
     if len(result) == 0:
-        return np.zeros((1, 3))
+        return np.array([])
             
     return np.array(result)
 
@@ -488,11 +500,15 @@ def calculate_vector_dot_product(df_model, df_test, mode='dtw_path', dtw_path=No
     df_test : DataFrame
         学習者の時系列データ
     mode : str
-        'dtw_path': 与えられたDTWパスを使用
-        'dtw_calc': 正規化ベクトルでDTWを計算して使用
-        'same_time': 同じ時間フレームで計算
+        'dtw_path': 与えられたDTWパスを使用 (正規化あり)
+        'dtw_calc': 正規化前のベクトルでDTWを計算して使用 (正規化あり)
+        'same_time': 同じ時間フレームで計算 (正規化あり)
+        'relative_time': 長い時系列を圧縮して同じ時間フレームで計算 (正規化あり)
+        'raw_dot_product_same_time': 同じ時間フレームで計算 (正規化なし)
     dtw_path : tuple, optional
         DTWパス（mode='dtw_path'の場合に必要）
+    call : int
+        プロットの位置を指定するためのパラメータ
     
     Returns:
     --------
@@ -517,68 +533,154 @@ def calculate_vector_dot_product(df_model, df_test, mode='dtw_path', dtw_path=No
     model_vectors = compute_non_zero_diffs(model_diffs)
     test_vectors = compute_non_zero_diffs(test_diffs)
 
-    # ベクトルの正規化（0ベクトルの場合はスキップ）
-    model_norms = np.linalg.norm(model_vectors, axis=1)
-    test_norms = np.linalg.norm(test_vectors, axis=1)
-    
-    # 0でないベクトルのみ正規化
-    model_vectors[model_norms > 0] = model_vectors[model_norms > 0] / model_norms[model_norms > 0, np.newaxis]
-    test_vectors[test_norms > 0] = test_vectors[test_norms > 0] / test_norms[test_norms > 0, np.newaxis]
-    
+    # 有効なベクトルが存在しない場合は0を返す
+    if len(model_vectors) == 0 or len(test_vectors) == 0:
+        return 0.0
+
     if mode == 'dtw_path':
         if dtw_path is None:
             raise ValueError("dtw_path must be provided when mode is 'dtw_path'")
         # 与えられたDTWパスに沿って内積を計算
         dot_products = []
-        for i in range(len(dtw_path[0])-1):
-            model_idx = dtw_path[0][i]
-            test_idx = dtw_path[1][i]
+        path0 = dtw_path[0]
+        path1 = dtw_path[1]
+        for i in range(len(path0)-1):
+            model_idx = path0[i]
+            test_idx = path1[i]
             if model_idx < len(model_vectors) and test_idx < len(test_vectors):
-                dot_products.append(np.dot(model_vectors[model_idx], test_vectors[test_idx]))
-    
+                # 内積を計算
+                dot_product = np.dot(model_vectors[model_idx], test_vectors[test_idx])
+                # ベクトルの長さで正規化
+                model_norm = np.linalg.norm(model_vectors[model_idx])
+                test_norm = np.linalg.norm(test_vectors[test_idx])
+                if model_norm > 0 and test_norm > 0:
+                    dot_products.append(dot_product / (model_norm * test_norm))
+        # dtw_pathは引数で与えられたものを使用
+
     elif mode == 'dtw_calc':
-        # 正規化後のベクトルを用いてDTWを計算
+        # 正規化前のベクトルを用いてDTWを計算
         dtw_result = dtw_sw(
             model_vectors[:, 0], model_vectors[:, 1], model_vectors[:, 2],
             test_vectors[:, 0], test_vectors[:, 1], test_vectors[:, 2],
-            12, 1.0, window='sakoe-chiba', factor=300
+            12, 0.5, window='sakoe-chiba', factor=300
         )
+        
+        dtw_path = dtw_result[3]
+        path0 = dtw_path[0]
+        path1 = dtw_path[1]
         
         # DTWパスに沿って内積を計算
         dot_products = []
-        for i in range(len(dtw_result[3][0])-1):
-            model_idx = dtw_result[3][0][i]
-            test_idx = dtw_result[3][1][i]
+        for i in range(len(path0)-1):
+            model_idx = path0[i]
+            test_idx = path1[i]
             if model_idx < len(model_vectors) and test_idx < len(test_vectors):
-                dot_products.append(np.dot(model_vectors[model_idx], test_vectors[test_idx]))
-        
+                # 内積を計算
+                dot_product = np.dot(model_vectors[model_idx], test_vectors[test_idx])
+                # ベクトルの長さで正規化
+                model_norm = np.linalg.norm(model_vectors[model_idx])
+                test_norm = np.linalg.norm(test_vectors[test_idx])
+                if model_norm > 0 and test_norm > 0:
+                    dot_products.append(dot_product / (model_norm * test_norm))
     
     elif mode == 'same_time':
         # 同じ時間フレームで内積を計算
         min_length = min(len(model_vectors), len(test_vectors))
-        dot_products = [np.dot(model_vectors[i], test_vectors[i]) for i in range(min_length)]
+        dot_products = []
+        for i in range(min_length):
+            # 内積を計算
+            dot_product = np.dot(model_vectors[i], test_vectors[i])
+            # ベクトルの長さで正規化
+            model_norm = np.linalg.norm(model_vectors[i])
+            test_norm = np.linalg.norm(test_vectors[i])
+            if model_norm > 0 and test_norm > 0:
+                dot_products.append(dot_product / (model_norm * test_norm))
+        # 同時刻のDTWパスを作成
+        path0 = list(range(min_length))
+        path1 = list(range(min_length))
+        dtw_path = (path0, path1)
+        
     
+    elif mode == 'relative_time':
+        # 長い時系列を圧縮して同じ時間フレームで計算
+        if len(model_vectors) > len(test_vectors):
+            # model_vectorsを圧縮
+            indices = np.linspace(0, len(model_vectors)-1, len(test_vectors)).astype(int)
+            model_vectors_compressed = model_vectors[indices]
+            test_vectors_compressed = test_vectors # 圧縮しない方を保持
+            min_length = len(test_vectors)
+            dot_products = []
+            for i in range(min_length):
+                # 内積を計算
+                dot_product = np.dot(model_vectors_compressed[i], test_vectors_compressed[i])
+                # ベクトルの長さで正規化
+                model_norm = np.linalg.norm(model_vectors_compressed[i])
+                test_norm = np.linalg.norm(test_vectors_compressed[i])
+                if model_norm > 0 and test_norm > 0:
+                    dot_products.append(dot_product / (model_norm * test_norm))
+            # プロット用に圧縮後のベクトルを代入
+            model_vectors = model_vectors_compressed
+            test_vectors = test_vectors_compressed
+
+        else:
+            # test_vectorsを圧縮
+            indices = np.linspace(0, len(test_vectors)-1, len(model_vectors)).astype(int)
+            test_vectors_compressed = test_vectors[indices]
+            model_vectors_compressed = model_vectors # 圧縮しない方を保持
+            min_length = len(model_vectors)
+            dot_products = []
+            for i in range(min_length):
+                # 内積を計算
+                dot_product = np.dot(model_vectors_compressed[i], test_vectors_compressed[i])
+                # ベクトルの長さで正規化
+                model_norm = np.linalg.norm(model_vectors_compressed[i])
+                test_norm = np.linalg.norm(test_vectors_compressed[i])
+                if model_norm > 0 and test_norm > 0:
+                    dot_products.append(dot_product / (model_norm * test_norm))
+            # プロット用に圧縮後のベクトルを代入
+            model_vectors = model_vectors_compressed
+            test_vectors = test_vectors_compressed
+
+        # 同時刻のDTWパスを作成
+        path0 = list(range(min_length))
+        path1 = list(range(min_length))
+        dtw_path = (path0, path1)
+
+    elif mode == 'raw_dot_product_same_time': # 新しいモード
+        # 同じ時間フレームで内積を計算 (正規化なし)
+        min_length = min(len(model_vectors), len(test_vectors))
+        dot_products = []
+        for i in range(min_length):
+            # 内積をそのまま計算
+            dot_product = np.dot(model_vectors[i], test_vectors[i])
+            dot_products.append(dot_product)
+        # 同時刻のDTWパスを作成
+        path0 = list(range(min_length))
+        path1 = list(range(min_length))
+        dtw_path = (path0, path1)
+
     else:
-        raise ValueError("mode must be one of 'dtw_path', 'dtw_calc', or 'same_time'")
-        
+        raise ValueError("mode must be one of 'dtw_path', 'dtw_calc', 'same_time', 'relative_time', or 'raw_dot_product_same_time'")
+
+     # プロット (dtw_pathが存在する場合のみ)
+    if dtw_path:
+        plt.subplot(5, 3, 3 * call - 2)
+        plot_alignment(model_vectors[:, 0], test_vectors[:, 0], dtw_path, step = 10)
+        plt.subplot(5, 3, 3 * call - 1)
+        plot_alignment(model_vectors[:, 1], test_vectors[:, 1], dtw_path, step = 10)
+        plt.subplot(5, 3, 3 * call)
+        plot_alignment(model_vectors[:, 2], test_vectors[:, 2], dtw_path, step = 10)
     
-    plt.subplot(5, 3, 3 * call - 2)  # 3行1列のi+1番目のサブプロット
-    plot_alignment(model_vectors[:, 0], test_vectors[:, 0], dtw_result[3], step = 10)
-    plt.subplot(5, 3, 3 * call - 1)
-    plot_alignment(model_vectors[:, 1], test_vectors[:, 1], dtw_result[3], step = 10)
-    plt.subplot(5, 3, 3 * call)
-    plot_alignment(model_vectors[:, 2], test_vectors[:, 2], dtw_result[3], step = 10)
-    
-        
-    
-    
-    # 内積の平均を返す
-    return np.mean(dot_products)
+    # 内積の平均を返す（有効な値のみを使用）
+    valid_dot_products = [x for x in dot_products if not np.isnan(x)]
+    if len(valid_dot_products) == 0:
+        return 0.0
+    return np.mean(valid_dot_products)
 
 # CSVファイルを読み込む
-df_model = pd.read_csv('Assets/OriginalAssets/File/Exp1_Model/3to3.csv')
-df_test_file = pd.read_csv('Assets/OriginalAssets/File/Exp1_3to3/te3.csv')
-df_t = pd.read_csv('Assets/OriginalAssets/File/Exp1_3to3/te3.csv', dtype=str)
+df_model = pd.read_csv('Assets/OriginalAssets/File/Exp7_Model/6_pos_linear_rot_slerp.csv')
+df_test_file = pd.read_csv('Assets/OriginalAssets/File/Exp7_6/_Te3.csv')
+df_t = pd.read_csv('Assets/OriginalAssets/File/Exp7_6/_Te3.csv', dtype=str)
 
 # "Time"列に0.01111111がある行のインデックスを取得
 indices = df_t[df_t["time"] == "0.01111111"].index
@@ -586,13 +688,13 @@ indices = df_t[df_t["time"] == "0.01111111"].index
 # インデックスを表示
 print(indices.tolist())
 
-# plt.figure(figsize=(20, 30))
-# for i in range(0, 5):
+# plt.figure(figsize=(12, 15))
+# for i in range(0, 1):
 #     if i < 4:
 #         df_test = df_test_file.loc[indices[i]:indices[i+1]-1]
 #     else:
 #         df_test = df_test_file.loc[indices[i]:]
-#     dtwsw_result = dtw_sw(df_model["PositionX"].to_numpy(), df_model["PositionY"].to_numpy(), df_model["PositionZ"].to_numpy(), df_test["PositionX"].to_numpy(), df_test["PositionY"].to_numpy(), df_test["PositionZ"].to_numpy(), 12, 0.5, window = 'sakoe-chiba', factor=180)
+#     dtwsw_result = dtw_sw(df_model["PositionX"].to_numpy(), df_model["PositionY"].to_numpy(), df_model["PositionZ"].to_numpy(), df_test["PositionX"].to_numpy(), df_test["PositionY"].to_numpy(), df_test["PositionZ"].to_numpy(), 12, 1.0, factor=180)
 #     dtw_score = dtwDistance(df_model["PositionX"].to_numpy(), df_model["PositionY"].to_numpy(), df_model["PositionZ"].to_numpy(), df_test["PositionX"].to_numpy(), df_test["PositionY"].to_numpy(), df_test["PositionZ"].to_numpy(), dtwsw_result[3][0], dtwsw_result[3][1])
 #     #サブプロットを作成
 #     plt.subplot(5, 3, 3*i + 1)  # 3行1列のi+1番目のサブプロット
@@ -601,7 +703,10 @@ print(indices.tolist())
 #     plot_alignment(df_model["PositionY"].to_numpy(), df_test["PositionY"].to_numpy(), dtwsw_result[3], step = 10)
 #     plt.subplot(5, 3, 3*i + 3)
 #     plot_alignment(df_model["PositionZ"].to_numpy(), df_test["PositionZ"].to_numpy(), dtwsw_result[3], step = 10)
-#     plt.title(f'Alignment {i+1}')
+#     # plt.subplot(5, 3, 3*i + 4)
+#     # plot_costmatrix(dtwsw_result[1], dtwsw_result[3])
+#     # plt.subplot(5, 3, 3*i + 5)
+#     # plot_costmatrix(dtwsw_result[2], dtwsw_result[3])
     
 #     print(dtw_score)
 #     euc_score = eucDistance(df_model["PositionX"].to_numpy(), df_model["PositionY"].to_numpy(), df_model["PositionZ"].to_numpy(), df_test["PositionX"].to_numpy(), df_test["PositionY"].to_numpy(), df_test["PositionZ"].to_numpy())
@@ -612,22 +717,31 @@ print(indices.tolist())
 # plt.show()
 
 plt.figure(figsize=(12, 15))
-for i in range(0, 5):
-    if i < 4:
+for i in range(0, 1):
+    if i < 0:
         df_test = df_test_file.loc[indices[i]:indices[i+1]-1]
     else:
         df_test = df_test_file.loc[indices[i]:]
     
-    # 1. 与えられたDTWパスを使用する場合
-    #dtw_path = dtwsw_result[3]  # dtw_swの結果からパスを取得
-    #dot_product1 = calculate_vector_dot_product(df_model, df_test, mode='dtw_path', dtw_path=dtw_path)
+    #1. 与えられたDTWパスを使用する場合
+    # dtw_path = dtwsw_result[3]  # dtw_swの結果からパスを取得
+    # dot_product1 = calculate_vector_dot_product(df_model, df_test, mode='dtw_path', dtw_path=dtw_path, call=i+1)
 
-    # 2. 正規化ベクトルでDTWを計算する場合
-    dot_product2 = calculate_vector_dot_product(df_model, df_test, mode='dtw_calc', call=i+1)
+    # #2. ベクトルでDTWを計算する場合
+    # dot_product2 = calculate_vector_dot_product(df_model, df_test, mode='dtw_calc', call=i+1)
 
-    # 3. 同じ時間フレームで計算する場合
-    #dot_product3 = calculate_vector_dot_product(df_model, df_test, mode='same_time')
-    print(dot_product2)
+    #3. 同じ時間フレームで計算する場合 (正規化あり)
+    dot_product3 = calculate_vector_dot_product(df_model, df_test, mode='same_time', call=i+1)
+
+    # #4. 長い時系列を圧縮して同じ時間フレームで計算 (正規化あり)
+    # dot_product4 = calculate_vector_dot_product(df_model, df_test, mode='relative_time', call=i+1)
+
+    #5. 同じ時間フレームで計算する場合 (正規化なし)
+    dot_product5 = calculate_vector_dot_product(df_model, df_test, mode='raw_dot_product_same_time', call=i+1)
+
+
+    print(dot_product5)
+
 plt.tight_layout()  # レイアウトを調整
 plt.show()
 

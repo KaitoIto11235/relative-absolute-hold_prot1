@@ -7,32 +7,31 @@ using System;
 using System.Text;
 using UnityEngine.XR;
 using Valve.VR;
+// using System.Linq; // TrajectorySimilarity.cs に移動したので不要 (他で使っていなければ)
 
 public class FileOperation  // ファイルの読み書きを行う。
 {
     private GameObject recordObject, startPoint, startPoint2, endPoint, endPoint2;
-    private bool readFileOpenFlag = false;
     private bool writeFileOpenFlag = false;
     private string readFileName;
-    private int fileRowCount;
-    private string writeFileName;
+    private int currentFileRowCount;
     private StreamReader sr;
     private StreamWriter sw;
-    public Vector3[] modelPositions;
-    public Quaternion[] modelQuaternions;
+    public Vector3[] modelPositions { get; private set; }
+    public Quaternion[] modelQuaternions { get; private set; }
     // public Vector3[] userPositions;
 
     // recording用変数↓
 	private int trialCount = 1;
-    public int TrialCount
-    { 
+
+    // 奇数⇒Training（見本あり）　偶数⇒Test（見本無し）
+    public int CurrentTrialCount
+    {
         get{ return trialCount; }
     }
-    private bool startFlag = false; // true: 準備OK
     private float time = 0f;        // true: どこかでファイル設定が間違っていて開けないため、再生停止
 
-    private bool fileSettingWrong = false;
-    private bool testFlag = false;
+    public bool fileSettingWrong { get; private set; } = false;
 
 
     // InteractUIボタンが押されているかを判定するためのIuiという関数にSteamVR_Actions.defalt_InteractionUIを固定
@@ -46,410 +45,488 @@ public class FileOperation  // ファイルの読み書きを行う。
     // 結果の格納用Boolean型関数grabgrip;
     private Boolean grabGrip;
     private Vector3 RightHandPosition;
+    public Vector3 UserPosition => RightHandPosition;
     private Quaternion RightHandRotationQ;
 
+    private string currentWriteFileNameBase; // 書き込みファイル名のベース
+    private bool isRecordingActive = false; // 現在記録中かを示すフラグ
+    public bool IsRecordingActive => isRecordingActive; // 外部参照用プロパティ
+
+    // --- 偶数試行の評価用変数 ---
+    // private float accumulatedDistance = 0f;
+    // private int frameCountForEval = 0;
+    // --- ここまで追加 ---
+
+    private List<Vector3> userTrajectory;
+
+    // --- 新しいプロパティ ---
+    public int FileRowCount => currentFileRowCount; // 外部参照用プロパティ
+
+    // --- コンストラクタ修正 ---
+    public FileOperation(GameObject recordObj,
+     GameObject startPoint, GameObject startPoint2, GameObject endPoint, GameObject endPoint2)
+    {
+        this.recordObject = recordObj; // This should be the 'user' GameObject
+        this.startPoint = startPoint;
+        this.startPoint2 = startPoint2;
+        this.endPoint = endPoint;
+        this.endPoint2 = endPoint2;
+        this.userTrajectory = new List<Vector3>();
+        this.fileSettingWrong = false; // 初期状態ではエラーなし
+        // testFlag = false; // testFlagの初期化（必要であれば）
+        Debug.Log("FileOperation instance created.");
+    }
+
+    // 既存のコンストラクタは削除またはコメントアウト
+    /*
     // 書き込みなしコンストラクタ
-    public FileOperation(string readFileName, int fileRowCount, GameObject recordObj,
-     GameObject startPoint, GameObject startPoint2, GameObject endPoint, GameObject endPoint2)
-    {
-        this.readFileName = readFileName;
-        this.fileRowCount = fileRowCount;
-        this.recordObject = recordObj;
-        modelPositions = new Vector3[fileRowCount];
-        modelQuaternions = new Quaternion[fileRowCount];
-        this.startPoint = startPoint;
-        this.startPoint2 = startPoint2;
-        this.endPoint = endPoint;
-        this.endPoint2 = endPoint2;
-        // userPositions = new Vector3[fileRowCount];
-    }
-
+    public FileOperation(string baseWriteFileName, GameObject recordObj, ...) { ... }
     // 読み込みなしコンストラクタ
-    public FileOperation(string writeFileName, GameObject recordObj,
-     GameObject startPoint, GameObject startPoint2, GameObject endPoint, GameObject endPoint2)
-    {
-        this.writeFileName = writeFileName;
-        this.recordObject = recordObj;
-        this.startPoint = startPoint;
-        this.startPoint2 = startPoint2;
-        this.endPoint = endPoint;
-        this.endPoint2 = endPoint2;
-        testFlag = true;
-    }
-
+    public FileOperation(string readFileName, int fileRowCount, GameObject recordObj, ...) { ... }
     // 読み書きありコンストラクタ
-    public FileOperation(string readFileName, int fileRowCount, string writeFileName, GameObject recordObj,
-     GameObject startPoint, GameObject startPoint2, GameObject endPoint, GameObject endPoint2)
+    public FileOperation(string readFileName, int fileRowCount, string baseWriteFileName, GameObject recordObj, ...) { ... }
+    */
+
+    // --- モデルデータ読み込みメソッド ---
+    public bool LoadModelData(string modelFileName, int expectedRowCount)
     {
-        this.recordObject = recordObj;
-        this.startPoint = startPoint;
-        this.startPoint2 = startPoint2;
-        this.endPoint = endPoint;
-        this.endPoint2 = endPoint2;
-        this.readFileName = readFileName;
-        this.writeFileName = writeFileName;
-        this.fileRowCount = fileRowCount;
-        modelPositions = new Vector3[fileRowCount];
-        modelQuaternions= new Quaternion[fileRowCount];
-        // userPositions = new Vector3[fileRowCount];
-    }
-    public void ReadOpenData()
-    {
-        if (!readFileOpenFlag)
+        this.readFileName = modelFileName; // 内部でファイル名を保持
+        this.currentFileRowCount = expectedRowCount; // 期待される行数を設定
+        this.fileSettingWrong = false; // 読み込み試行前にエラーフラグをリセット
+
+        // 配列を（再）確保
+        modelPositions = new Vector3[this.currentFileRowCount];
+        modelQuaternions = new Quaternion[this.currentFileRowCount];
+
+        string filePath = Path.Combine(Application.dataPath, "originalAssets", "File", this.readFileName + ".csv");
+        Debug.Log($"Attempting to load model data from: {filePath}");
+
+        if (!File.Exists(filePath))
         {
-            string file;
-            {
-                //file = Application.persistentDataPath + FileName + ".csv";
+            Debug.LogError($"Read file not found: {filePath}");
+            this.fileSettingWrong = true;
+            return false;
+        }
 
-                file = Application.dataPath + @"/originalAssets/File/" + readFileName + ".csv";
-            }
-
-            if(File.Exists(file))
+        int rowsRead = 0; // 実際に読み込んだデータ行数をカウント
+        try
+        {
+            // usingステートメントでStreamReaderを確実に破棄する
+            using (StreamReader tempSr = new StreamReader(filePath, Encoding.UTF8))
             {
-                sr = new StreamReader(new FileStream(file, FileMode.Open), Encoding.UTF8);
-                int i = 0;
-                while(sr.EndOfStream == false)
+                string headerLine = tempSr.ReadLine(); // ヘッダー行を読み飛ばし
+                if (headerLine == null)
                 {
-                    string line = sr.ReadLine();
+                    Debug.LogError($"File is empty or header is missing: {filePath}");
+                    this.fileSettingWrong = true;
+                    return false;
+                }
+                // Debug.Log($"Header: {headerLine}"); // 必要ならヘッダー内容をログ出力
+
+                // データ行を読み込む
+                while (!tempSr.EndOfStream && rowsRead < this.currentFileRowCount) // 配列サイズを超えないように
+                {
+                    string line = tempSr.ReadLine();
                     string[] values = line.Split(',');
-                    if (values.Length >= 5 && i >= 1)
+
+                    // 列数のチェック (最低9列: Trial, time, PosX,Y,Z, QX,Y,Z,W を想定)
+                    if (values.Length >= 9)
                     {
-                        float PosX = float.Parse(values[2]);
-                        float PosY = float.Parse(values[3]);
-                        float PosZ = float.Parse(values[4]);
-                        Vector3 position = new Vector3(PosX, PosY, PosZ);
+                        try
+                        {
+                            // インデックスは0ベース、ヘッダー順に合わせて調整
+                            // 例: PosXが3列目なら values[2]
+                            float PosX = float.Parse(values[2].Trim()); // Trim()で空白除去
+                            float PosY = float.Parse(values[3].Trim());
+                            float PosZ = float.Parse(values[4].Trim());
+                            modelPositions[rowsRead] = new Vector3(PosX, PosY, PosZ);
 
-                        float QuaX = float.Parse(values[5]);
-                        float QuaY = float.Parse(values[6]);
-                        float QuaZ = float.Parse(values[7]);
-                        float QuaW = float.Parse(values[8]);
-                        Quaternion quaternion = new Quaternion(QuaX, QuaY, QuaZ, QuaW);
-                        // ここでVector3を使用するか、配列に保存する
-                        modelPositions[i-1] = position;
-                        modelQuaternions[i-1] = quaternion;
+                            float QuaX = float.Parse(values[5].Trim());
+                            float QuaY = float.Parse(values[6].Trim());
+                            float QuaZ = float.Parse(values[7].Trim());
+                            float QuaW = float.Parse(values[8].Trim());
+                            // Quaternionの正規化が必要な場合がある
+                            modelQuaternions[rowsRead] = new Quaternion(QuaX, QuaY, QuaZ, QuaW).normalized;
+
+                            rowsRead++; // 正常に読み込めたらカウント
+                        }
+                        catch (FormatException ex)
+                        {
+                            // パースエラーが発生した行はスキップし、警告を出す
+                            Debug.LogWarning($"Skipping line {rowsRead + 2} due to parse error in {filePath}: {ex.Message} - Line: \"{line}\"");
+                        }
+                        catch (IndexOutOfRangeException ex)
+                        {
+                             // 列数が足りない行はスキップし、警告を出す
+                             Debug.LogWarning($"Skipping line {rowsRead + 2} due to missing columns in {filePath}: {ex.Message} - Line: \"{line}\"");
+                        }
                     }
-                    i++;
-                }
-                Vector3 start = modelPositions[0];
-                Vector3 end = modelPositions[i-2];
-                startPoint.transform.position = modelPositions[0];
-                startPoint2.transform.position = new Vector3(start.x, start.y, start.z - 3f);
-                endPoint.transform.position = modelPositions[i-2];
-                endPoint2.transform.position = new Vector3(end.x, end.y, end.z - 3f);
+                    else
+                    {
+                         // 列数が不足している行はスキップし、警告を出す
+                         Debug.LogWarning($"Skipping line {rowsRead + 2} due to insufficient columns ({values.Length}) in {filePath}: Expected >= 9. Line: \"{line}\"");
+                    }
+                } // End of while loop
+            } // StreamReader is disposed here
 
-
-                if(i-1 != fileRowCount)
-                {
-                    Debug.Log("FileRowCountが不適切です。\n" + (i - 1) + "に設定してください。" + readFileName);
-                    fileSettingWrong = true;
-                }
-
-                readFileOpenFlag = true;
-                Debug.Log(file);
-
-                ReadCloseData();
+            // 実際に読み込んだ行数を確認
+            if (rowsRead != this.currentFileRowCount)
+            {
+                Debug.LogWarning($"Expected {this.currentFileRowCount} data rows, but successfully read {rowsRead} rows from {filePath}. Adjusting FileRowCount. Check file content or inspector setting.");
+                // 実際に読み込めた行数に更新
+                this.currentFileRowCount = rowsRead;
+                // 配列をリサイズするかどうかは設計による (ここではリサイズしない)
+                // 必要ならリサイズ: Array.Resize(ref modelPositions, rowsRead); Array.Resize(ref modelQuaternions, rowsRead);
             }
 
-            if (!File.Exists(file))
+            // データが1行でも読み込めたか？
+            if (rowsRead > 0)
             {
-                Debug.Log("ファイルが見つかりません。");
-            }
-        }
-        else
-        {
-            Debug.Log("File has already opened.");
-        }
-    }
-
-    public StreamWriter WriteOpenData()
-    {
-        if (!writeFileOpenFlag)
-        {
-            string file = Application.dataPath + @"/originalAssets/File/" + writeFileName + ".csv";
-
-            if (!File.Exists(file))
-            {
-                sw = File.CreateText(file);
-                sw.Flush();
-                sw.Dispose();
-
-                //UTF-8で生成...2番目の引数はtrueで末尾に追記、falseでファイルごとに上書き
-                sw = new StreamWriter(new FileStream(file, FileMode.Open), Encoding.UTF8);
-
-                string[] s1 =
-                {
-                "Trial", "time",
-                "PositionX", "PositionY", "PositionZ",
-                "RotationQX", "RotationQY", "RotationQZ", "RotationQW",
-                "frameDiff", "userLevel", "preTrialOffset", "preLevelOffset",
-                };
-                string s2 = string.Join(",", s1);
-                sw.WriteLine(s2);
-                sw.Flush();
-
-                writeFileOpenFlag = true;
-                Debug.Log("Create_csv");
-                Debug.Log(file);
-
-                // startPoint.GetComponent<MeshRenderer>().material.color = Color.yellow;  // 記録されていることを示すために、startPointを黄色にする。
-
-                return sw;
+                // 開始点・終了点を更新
+                UpdateStartEndPoints(modelPositions[0], modelPositions[rowsRead - 1]);
+                Debug.Log($"Successfully loaded {rowsRead} data rows from: {filePath}");
+                this.fileSettingWrong = false; // エラーフラグを解除
+                return true; // 成功
             }
             else
             {
-                Debug.Log("そのファイルは既に存在しています。ファイル名をInspectorから変更してください。"); 
-                fileSettingWrong = true;
-                return null;
+                 // データ行が全く読み込めなかった場合
+                 Debug.LogError($"No valid data rows could be read from {filePath}. Check file format.");
+                 this.fileSettingWrong = true;
+                 return false; // 失敗
             }
         }
-        else
+        catch (IOException ex) // ファイルI/Oエラー
         {
-            Debug.Log("ファイルは既に開かれています。");
+            Debug.LogError($"IO Error reading file {filePath}: {ex.Message}");
+            this.fileSettingWrong = true;
+            return false;
+        }
+        catch (Exception ex) // その他の予期せぬエラー
+        {
+            Debug.LogError($"Unexpected error reading file {filePath}: {ex.Message}\n{ex.StackTrace}");
+            this.fileSettingWrong = true;
+            return false;
+        }
+    }
+
+    // 既存の ReadOpenData は LoadModelData に置き換えられたため削除
+    // public void ReadOpenData() { ... }
+
+    // --- 書き込みファイル名設定メソッド ---
+    public void SetWriteFileNameBase(string baseName)
+    {
+        if (string.IsNullOrEmpty(baseName))
+        {
+             Debug.LogError("Cannot set an empty or null base name for writing files.");
+             // this.fileSettingWrong = true; // 必要ならエラーフラグを立てる
+             return;
+        }
+        this.currentWriteFileNameBase = baseName;
+        Debug.Log($"Write file base name set to: \"{this.currentWriteFileNameBase}\"");
+    }
+
+    // --- 書き込みファイルオープンメソッド ---
+    public StreamWriter WriteOpenData()
+    {
+        if (writeFileOpenFlag) // 既に開いている場合
+        {
+            Debug.LogWarning("Write file is already open. Returning existing StreamWriter.");
+            return sw;
+        }
+
+        // ベース名が設定されているか確認
+        if (string.IsNullOrEmpty(currentWriteFileNameBase))
+        {
+            Debug.LogError("Write file base name is not set. Call SetWriteFileNameBase() first.");
+            fileSettingWrong = true;
+            return null;
+        }
+
+        // 試行回数に基づいてファイル名を生成 (Tr:奇数, Te:偶数)
+        string suffix = (trialCount % 2 == 1) ? $"_Tr{(trialCount / 2) + 1}" : $"_Te{trialCount / 2}";
+        string currentWriteFileName = $"{currentWriteFileNameBase}{suffix}.csv";
+        string filePath = Path.Combine(Application.dataPath, "originalAssets", "File", currentWriteFileName);
+
+        Debug.Log($"Attempting to create/open write file: {filePath}");
+
+        try
+        {
+            // --- ファイル存在チェック ---
+            if (File.Exists(filePath))
+            {
+                // 既存ファイルを上書きしないようにエラーとする
+                Debug.LogError($"Write file already exists: {filePath}. Stopping recording to prevent overwrite. Please rename or delete the existing file.");
+                fileSettingWrong = true; // エラーフラグ
+                return null; // StreamWriterを返さずに終了
+            }
+            // --- ここまで ---
+
+            // 新規作成モード (上書きしない: false) でファイルを開く
+            sw = new StreamWriter(filePath, false, Encoding.UTF8);
+
+            // ヘッダー行を書き込む
+            string[] headerColumns =
+            {
+                "Trial", "time",
+                "PositionX", "PositionY", "PositionZ",
+                "RotationQX", "RotationQY", "RotationQZ", "RotationQW",
+                // 必要なら他のデータ列も追加
+            };
+            string headerLine = string.Join(",", headerColumns);
+            sw.WriteLine(headerLine);
+            sw.Flush(); // ヘッダーはすぐに書き込む
+
+            writeFileOpenFlag = true; // 書き込み成功フラグ
+            Debug.Log($"Successfully created and opened write file: {filePath}");
+
+            // ResetEvaluationMetrics(); // 評価用メトリクスリセット (このクラスでは不要になった)
+
+            return sw; // 成功したらStreamWriterを返す
+        }
+        catch (IOException ex) // ファイルI/Oエラー
+        {
+            Debug.LogError($"Could not open write file: {filePath}. IO Error: {ex.Message}");
+            fileSettingWrong = true;
+            if (sw != null) { sw.Dispose(); sw = null; } // エラー時でもリソース解放試行
+            return null;
+        }
+        catch (Exception ex) // その他の予期せぬエラー
+        {
+            Debug.LogError($"Unexpected error opening write file: {filePath}. Error: {ex.Message}\n{ex.StackTrace}");
+            fileSettingWrong = true;
+            if (sw != null) { sw.Dispose(); sw = null; }
             return null;
         }
     }
 
-    public void FileSettingCheck()
-    {
-        if(fileSettingWrong)
-        {
-            UnityEditor.EditorApplication.isPlaying = false;            // エディタの再生を強制終了
-        }
-    }
+
+
+    // --- 記録更新メソッド ---
     public void RecordingUpdate()
     {
-        // 結果をGetStateで取得してinteracrtuiに格納
-        // SteamVR_Input_Sources.機器名（今回は左コントローラ）
-        // トリガーを押したらinteractUIがtrue
+        // エラー状態なら何もしない
+        if (fileSettingWrong) return;
+
+        // 右コントローラーの入力状態を取得
         interactUI = Iui.GetState(SteamVR_Input_Sources.RightHand);
+        // grabGrip = GrabG.GetState(SteamVR_Input_Sources.RightHand); // 必要に応じて取得
 
-        //結果をGetStateで取得してgrapgripに格納
-        //SteamVR_Input_Sources.機器名（今回は左コントローラ）
-        // 側面ボタンを押したらgrabGripがtrue
-        grabGrip = GrabG.GetState(SteamVR_Input_Sources.RightHand);
-
-
+        // 経過時間を加算
         time += Time.deltaTime;
 
-        // 右コントローラの姿勢を取得する方法
+        // 右コントローラーの現在の姿勢を取得
         InputDevice rightHandDevice = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-        if (rightHandDevice.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 newRightHandPosition))
+        // TryGetFeatureValue が false を返した場合、デフォルト値または前回値を使う
+        rightHandDevice.TryGetFeatureValue(CommonUsages.devicePosition, out RightHandPosition);
+        rightHandDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out RightHandRotationQ);
+        // 必要に応じてオフセット適用や座標系の変換を行う
+        // RightHandRotationQ = RightHandRotationQ.normalized; // 正規化
+
+        // --- 記録状態の遷移 ---
+        if (interactUI && !isRecordingActive) // トリガーを押した瞬間 (記録開始)
         {
-            RightHandPosition = newRightHandPosition;
+            // 書き込みファイルが開かれていなければ開く試み
+            if (!writeFileOpenFlag)
+            {
+                WriteOpenData();
+                // WriteOpenDataが失敗したら (swがnull or writeFileOpenFlagがfalse)、記録開始しない
+                if (sw == null || !writeFileOpenFlag || fileSettingWrong) {
+                    Debug.LogError("Failed to open write file. Recording cannot start.");
+                    return; // 記録開始を中断
+                }
+            }
+
+            // ファイルが正常に開けた場合のみ記録開始処理
+            if (writeFileOpenFlag)
+            {
+                time = 0f; // 記録時間をリセット
+                userTrajectory.Clear(); // 新しい試行のためにリストをクリア
+                isRecordingActive = true; // 記録中フラグを立てる
+                Debug.Log($"Start Recording Trial: {trialCount}");
+                // ResetEvaluationMetrics(); // 評価メトリクスはこのクラス管理外
+                // 記録開始時のデータも保存
+                SaveData(RightHandPosition, RightHandRotationQ);
+            }
         }
-        if (rightHandDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion newRightHandRotationQ))
+        else if (interactUI && isRecordingActive) // トリガーを押している間 (記録中)
         {
-            RightHandRotationQ = newRightHandRotationQ;
+             // ファイルが開かれていればデータを保存
+             if (writeFileOpenFlag && sw != null)
+             {
+                 SaveData(RightHandPosition, RightHandRotationQ);
+             }
+             else if (!fileSettingWrong) // エラーでないのに書き込めない場合のみ警告
+             {
+                 Debug.LogWarning("Cannot save data: Write file is not open or StreamWriter is null during recording.");
+                 // isRecordingActive = false; // 記録を中断するなどの措置も検討
+             }
         }
-        RightHandPosition = SteamVR_Behaviour_Skeleton.ControllerOffsetPos(RightHandPosition, RightHandRotationQ);
-        RightHandRotationQ = SteamVR_Behaviour_Skeleton.ControllerOffsetRot(RightHandPosition, RightHandRotationQ);
-        //RightHandRotationQ = Quaternion.AngleAxis(90, recordObject.transform.forward ) * RightHandRotationQ;
-        Vector3 euler = RightHandRotationQ.eulerAngles;
-        euler.z -= 90; // z軸回りに-90度回転
-        RightHandRotationQ = Quaternion.Euler(euler);
-        
-        if (interactUI && !startFlag) // startPoint付近に入ったとき
+        else if (!interactUI && isRecordingActive) // トリガーを離した瞬間 (記録終了)
         {
-            time = 0f;
-            startFlag = true;
-            // startPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            // endPoint.GetComponent<MeshRenderer>().material.color = Color.green;
-            // startPoint2.GetComponent<MeshRenderer>().material.color = Color.white;
-            // endPoint2.GetComponent<MeshRenderer>().material.color = Color.green;
-        }
-        else if (interactUI && startFlag)
-        {
-            // 記録中のフレームでデータを保存
+            // 離した瞬間のデータも記録（重要）
             SaveData(RightHandPosition, RightHandRotationQ);
+
+
+            // DTW評価や距離評価はこのクラスでは行わない
+            // if (trialCount % 2 == 0) { /* CalculateAndLogAverageDistance(); */ }
+
+            WriteCloseData(); // 現在のファイルを閉じる
+            trialCount++;     // 次の試行番号へ
+            isRecordingActive = false; // 記録終了フラグ
+            // userTrajectory.Clear(); // クリアは次の記録開始時に行う方が、外部での評価に使いやすい
         }
 
-        // if (interactUI && startFlag && Vector3.Distance(RightHandPosition, endPoint.transform.position) < 0.1f) // endPoint付近に入ったとき
-        // {
-            //endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-        //     EndData();
-        //     startFlag = false;
-        // }
-        if (!interactUI && startFlag) // endPoint付近に入ったとき
+        // エンターキーでの終了処理 (デバッグ用など)
+        if (Input.GetKeyDown(KeyCode.Return))
         {
-            // endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            EndData();
-            startFlag = false;
-            // startPoint.GetComponent<MeshRenderer>().material.color = Color.yellow;
-            // endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            // startPoint2.GetComponent<MeshRenderer>().material.color = Color.yellow;
-            // endPoint2.GetComponent<MeshRenderer>().material.color = Color.white;
+            if (isRecordingActive) {
+                Debug.Log("Forcing end of recording via Enter key.");
+                // 離した時と同じ処理を実行
+                SaveData(RightHandPosition, RightHandRotationQ);
+                WriteCloseData();
+                trialCount++;
+                isRecordingActive = false;
+            } else if (writeFileOpenFlag) {
+                // 記録中でなくてもファイルが開いている場合があるか？（通常はないはず）
+                Debug.LogWarning("Write file was open but not recording. Closing file via Enter key.");
+                WriteCloseData();
+            }
         }
+    }
 
-        if (Input.GetKeyDown(KeyCode.Return)) // エンターキーが押されたら、ファイルを閉じる。
+
+    // --- データ保存メソッド ---
+    // 引数を pos, rot に変更
+    public void SaveData(Vector3 pos, Quaternion rot)
+    {
+        // 記録中でない、またはファイルが開かれていない場合は書き込まない
+        if (!isRecordingActive || sw == null || !writeFileOpenFlag || fileSettingWrong) return;
+
+        // 書き込むデータ配列を作成
+        string[] dataToWrite = new string[]
         {
+            Convert.ToString(trialCount), Convert.ToString(time), // timeは記録開始からの経過時間
+            Convert.ToString(pos.x), Convert.ToString(pos.y), Convert.ToString(pos.z),
+            Convert.ToString(rot.x), Convert.ToString(rot.y), Convert.ToString(rot.z), Convert.ToString(rot.w),
+            // 必要に応じて他のデータも追加
+        };
+        // testFlagに応じた分岐は削除（StoCCondition側でファイル名を制御するため）
+        /*
+        if (!testFlag) { ... } else { ... }
+        */
+
+        string lineToWrite = string.Join(",", dataToWrite);
+
+        try
+        {
+            // ファイルに一行書き込む
+            sw.WriteLine(lineToWrite);
+            // sw.Flush(); // Flushはパフォーマンス影響を考慮し、通常はClose時に行う
+
+            // ユーザートラジェクトリリストに現在の位置を追加
+            // userTrajectory はnullチェック不要 (コンストラクタで初期化されるため)
+            userTrajectory.Add(pos);
+        }
+        catch (ObjectDisposedException)
+        {
+            // StreamWriterが既に閉じられている場合（通常は起こらないはず）
+            Debug.LogError("Cannot write data: StreamWriter has been disposed unexpectedly.");
+            isRecordingActive = false; // 記録を強制終了
+            fileSettingWrong = true;
+        }
+        catch (IOException ex)
+        {
+            Debug.LogError($"IO Error writing data to file: {ex.Message}");
+            isRecordingActive = false;
+            fileSettingWrong = true;
+            WriteCloseData(); // エラー時はファイルを閉じる試み
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Unexpected error writing data: {ex.Message}\n{ex.StackTrace}");
+            isRecordingActive = false;
+            fileSettingWrong = true;
             WriteCloseData();
         }
-
     }
-    public void RecordingUpdate(float distToFile, int userLevel, int trialOffset, int levelOffset)
+
+    // --- ユーザートラジェクトリ取得メソッド ---
+    public List<Vector3> GetUserTrajectoryData()
     {
-        time += Time.deltaTime;
-
-        // 結果をGetStateで取得してinteracrtuiに格納
-        // SteamVR_Input_Sources.機器名（今回は左コントローラ）
-        // トリガーを押したらinteractUIがtrue
-        interactUI = Iui.GetState(SteamVR_Input_Sources.RightHand);
-        //結果をGetStateで取得してgrapgripに格納
-        //SteamVR_Input_Sources.機器名（今回は左コントローラ）
-        // 側面ボタンを押したらgrabGripがtrue
-        grabGrip = GrabG.GetState(SteamVR_Input_Sources.RightHand);
-
-
-        InputDevice rightHandDevice = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
-        if (rightHandDevice.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 newRightHandPosition))
+        // 外部で変更されることを防ぐため、リストのコピーを返す
+        if (userTrajectory == null)
         {
-            RightHandPosition = newRightHandPosition;
+             Debug.LogError("User trajectory list is null.");
+             return new List<Vector3>(); // 空のリストを返す
         }
-        if (rightHandDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion newRightHandRotationQ))
-        {
-            RightHandRotationQ = newRightHandRotationQ;
-        }
-        RightHandPosition = SteamVR_Behaviour_Skeleton.ControllerOffsetPos(RightHandPosition, RightHandRotationQ);
-        RightHandRotationQ = SteamVR_Behaviour_Skeleton.ControllerOffsetRot(RightHandPosition, RightHandRotationQ);
-
-        if (interactUI && !startFlag) // トリガーを押した時
-        {
-            time = 0f;
-            startFlag = true;
-            // startPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            // endPoint.GetComponent<MeshRenderer>().material.color = Color.green;
-            // startPoint2.GetComponent<MeshRenderer>().material.color = Color.white;
-            // endPoint2.GetComponent<MeshRenderer>().material.color = Color.green;
-        }
-        else if (interactUI && startFlag)
-        {
-            // 記録中のフレームでデータを保存
-            SaveData(RightHandPosition, RightHandRotationQ, distToFile, userLevel, trialOffset, levelOffset);
-        }
-
-        // if (interactUI && startFlag && Vector3.Distance(RightHandPosition, endPoint.transform.position) < 0.1f) // endPoint付近に入ったとき
-        // {
-        //     endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-        //     EndData();
-        //     startFlag = false;
-        // }
-        if (!interactUI && startFlag) // トリガーを外した時
-        {
-            //endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            EndData();
-            startFlag = false;
-
-            // startPoint.GetComponent<MeshRenderer>().material.color = Color.yellow;
-            // endPoint.GetComponent<MeshRenderer>().material.color = Color.white;
-            // startPoint2.GetComponent<MeshRenderer>().material.color = Color.yellow;
-            // endPoint2.GetComponent<MeshRenderer>().material.color = Color.white;
-        }
-
-        if (Input.GetKeyDown(KeyCode.Return)) // エンターキーが押されたら、ファイルを閉じる。
-        {
-            WriteCloseData();
-        }
-
+        return new List<Vector3>(userTrajectory);
     }
 
-    public void EndData()
-    {
-        sw.WriteLine("");
-        sw.Flush();
-        Debug.Log("End_Trail:" + trialCount);
-        trialCount++;
-    }
 
-    public void SaveData(Vector3 RightHandPosition, Quaternion RightHandRotationQ)
-    {
-        string[] s1 =
-        {
-            Convert.ToString(trialCount), Convert.ToString(time),
-            
-            // Convert.ToString(recordObject.transform.position.x), Convert.ToString(recordObject.transform.position.y), Convert.ToString(recordObject.transform.position.z),
-            // Convert.ToString(recordObject.transform.rotation.x), Convert.ToString(recordObject.transform.rotation.y), Convert.ToString(recordObject.transform.rotation.z),
-            // Convert.ToString(recordObject.transform.rotation.w),
-            Convert.ToString(RightHandPosition.x), Convert.ToString(RightHandPosition.y), Convert.ToString(RightHandPosition.z),
-            Convert.ToString(RightHandRotationQ.x), Convert.ToString(RightHandRotationQ.y), Convert.ToString(RightHandRotationQ.z),
-            Convert.ToString(RightHandRotationQ.w),
-        };
-        string[] s2 =
-        {
-            "test" + Convert.ToString(trialCount), Convert.ToString(time),
-            Convert.ToString(RightHandPosition.x), Convert.ToString(RightHandPosition.y), Convert.ToString(RightHandPosition.z),
-            Convert.ToString(RightHandRotationQ.x), Convert.ToString(RightHandRotationQ.y), Convert.ToString(RightHandRotationQ.z),
-            Convert.ToString(RightHandRotationQ.w),
-        };
-        
-        string s3 = string.Join(",", s1);
-        string s4 = string.Join(",", s2);
-        if(!testFlag)
-        {
-            sw.WriteLine(s3);
-        }
-        else
-        {
-            sw.WriteLine(s4);
-        }
-        
-        sw.Flush();
-    }
-    public void SaveData(Vector3 RightHandPosition, Quaternion RightHandRotationQ, float distToFile, int userLevel, int trialOffset, int levelOffset)
-    {
-        string[] s1 =
-        {
-            Convert.ToString(trialCount), Convert.ToString(time),
-            Convert.ToString(RightHandPosition.x), Convert.ToString(RightHandPosition.y), Convert.ToString(RightHandPosition.z),
-            Convert.ToString(RightHandRotationQ.x), Convert.ToString(RightHandRotationQ.y), Convert.ToString(RightHandRotationQ.z),
-            Convert.ToString(RightHandRotationQ.w),
-            Convert.ToString(distToFile), Convert.ToString(userLevel), Convert.ToString(trialOffset), Convert.ToString(levelOffset),
-        };
-        string[] s2 =
-        {
-            "test" + Convert.ToString(trialCount), Convert.ToString(time),
-            Convert.ToString(RightHandPosition.x), Convert.ToString(RightHandPosition.y), Convert.ToString(RightHandPosition.z),
-            Convert.ToString(RightHandRotationQ.x), Convert.ToString(RightHandRotationQ.y), Convert.ToString(RightHandRotationQ.z),
-            Convert.ToString(RightHandRotationQ.w),
-            Convert.ToString(distToFile), Convert.ToString(userLevel), Convert.ToString(trialOffset), Convert.ToString(levelOffset),
-        };
-        
-        string s3 = string.Join(",", s1);
-        string s4 = string.Join(",", s2);
-        if(!testFlag)
-        {
-            sw.WriteLine(s3);
-        }
-        else
-        {
-            sw.WriteLine(s4);
-        }
-        
-        sw.Flush();
-    }
-    private void ReadCloseData()
-    {
-        if (sr != null) // swがnullでないことを確認
-        {
-            sr.Dispose();
-            Debug.Log("CloseRead_csv");
-            readFileOpenFlag = false;
-        }
-        else
-        {
-            Debug.Log("StreamReaderが初期化されていません。");
-        }
-    }
+    // ReadCloseData は LoadModelData 内で using を使うため不要
+    // private void ReadCloseData() { ... }
+
+
+    // --- 書き込みファイルクローズメソッド ---
     private void WriteCloseData()
     {
-        if (sw != null) // swがnullでないことを確認
+        if (sw != null && writeFileOpenFlag) // StreamWriter が存在し、ファイルが開いているフラグが立っている場合のみ
         {
-            sw.Dispose();
-            Debug.Log("CloseWrite_csv");
-            writeFileOpenFlag = false;  
+            try
+            {
+                Debug.Log($"Closing write file. Trial {trialCount} finished.");
+                sw.Flush(); // 閉じる前にバッファの内容を確実に書き出す
+                sw.Dispose(); // DisposeがCloseも行う (リソース解放)
+            }
+            catch (ObjectDisposedException)
+            {
+                // すでに閉じられている場合は警告を出す程度
+                Debug.LogWarning("StreamWriter was already disposed when trying to close.");
+            }
+            catch (IOException ex)
+            {
+                 Debug.LogError($"IO Error closing write file: {ex.Message}");
+                 // エラーが発生してもフラグはリセットする
+            }
+            catch (Exception ex)
+            {
+                 Debug.LogError($"Unexpected error closing write file: {ex.Message}\n{ex.StackTrace}");
+            }
+            finally
+            {
+                 // finallyブロックで確実にnullにし、フラグをリセット
+                 sw = null;
+                 writeFileOpenFlag = false;
+            }
         }
-        else
+        else if (sw == null && writeFileOpenFlag)
         {
-            Debug.Log("StreamWriterが初期化されていません。");
+            // swがnullなのにフラグがtrueになっている異常状態
+             Debug.LogWarning("WriteCloseData called but StreamWriter was null while flag was true. Resetting flag.");
+             writeFileOpenFlag = false;
         }
+        // swがnullでフラグもfalseの場合は何もしない (既に閉じているか、開かれていない)
     }
-}
+
+    // --- public なファイルクローズメソッド ---
+    // OnDestroyなどから呼ばれることを想定
+    public void CloseFile()
+    {
+        // 書き込みファイルを閉じる（読み込みファイルはusingで管理）
+        WriteCloseData();
+        Debug.Log("FileOperation.CloseFile() called.");
+    }
+
+    // --- 開始点・終了点更新ヘルパー ---
+    // 引数を startPos, endPos に変更
+    public void UpdateStartEndPoints(Vector3 startPos, Vector3 endPos)
+    {
+        if (startPoint != null) startPoint.transform.position = startPos;
+        if (startPoint2 != null) startPoint2.transform.position = new Vector3(startPos.x, startPos.y, startPos.z - 3f); // 3PP用オフセット（固定値でよいか？）
+        if (endPoint != null) endPoint.transform.position = endPos;
+        if (endPoint2 != null) endPoint2.transform.position = new Vector3(endPos.x, endPos.y, endPos.z - 3f); // 3PP用オフセット
+    }
+
+
+} // End of FileOperation class
